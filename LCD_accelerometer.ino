@@ -27,7 +27,7 @@ bool isCalibrated = false;
 bool inMotion = false;
 unsigned long motionStartTime = 0;
 unsigned long stillStartTime = 0;
-const unsigned long STILL_TIMEOUT = 2000;  // 2 seconds to detect stillness
+const unsigned long STILL_TIMEOUT = 1500;  // 1.5 seconds to detect stillness
 
 void setup() {
   // LCD setup
@@ -46,9 +46,12 @@ void setup() {
   Modulino.begin();
   movement.begin();
   
-  Serial.println("Motion Detection System");
-  Serial.println("======================");
-  Serial.println("Keep device still for calibration...");
+  tft.fillScreen(ST77XX_BLACK);
+  tft.print("Motion Detection System");
+  tft.setCursor(30, 100);
+  tft.print("======================");
+  tft.setCursor(40, 100);
+  tft.print("Keep device still for calibration...");
   
   delay(2000);
   calibrateSensor();
@@ -78,8 +81,10 @@ void calibrateSensor() {
   baseYaw = sumYaw / samples;
   
   isCalibrated = true;
-  Serial.println("✓ Calibration complete!");
-  Serial.println();
+  tft.fillRect(40, 100, 10, 10, ST77XX_BLACK)
+  tft.setCursor(40, 100);
+  tft.print(" Calibration complete!");
+
 }
 
 void detectMotion() {
@@ -106,21 +111,11 @@ void detectMotion() {
     // Motion just started
     inMotion = true;
     motionStartTime = millis();
-    Serial.println("🏃 MOTION DETECTED!");
+    Serial.println(" MOTION DETECTED!");
     tft.fillScreen(0x0000); // black out/clear screen
     tft.setCursor(20, 100);
     tft.print("Motion: Active");
     
-    // Identify type of motion
-    if (deltaRoll > ROTATION_THRESHOLD || deltaPitch > ROTATION_THRESHOLD) {
-      Serial.println("   Type: Rotation");
-    }
-    if (deltaX > MOTION_THRESHOLD || deltaY > MOTION_THRESHOLD) {
-      Serial.println("   Type: Linear movement");
-    }
-    if (deltaZ > MOTION_THRESHOLD * 2) {
-      Serial.println("   Type: Vertical movement");
-    }
   }
   else if (!motionDetected && inMotion) {
     // Motion might have stopped
@@ -131,7 +126,7 @@ void detectMotion() {
       // Device has been still for timeout period
       inMotion = false;
       unsigned long duration = (millis() - motionStartTime) / 1000;
-      Serial.print("✋ Motion stopped. Duration: ");
+      Serial.print(" Motion stopped. Duration: ");
       Serial.print(duration);
       Serial.println(" seconds");
       stillStartTime = 0;
