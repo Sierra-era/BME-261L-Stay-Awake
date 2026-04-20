@@ -21,18 +21,18 @@ https://docs.arduino.cc/tutorials/modulino-movement/how-movement/
 
 */
 // vibration //
-#define DFvibpin 6
-#define tinkervibpin 5
+#define DFvibpin 3
+#define tinkervibpin 4
 
 
 // RTC //
-#define RTC_interruptpin 
+#define RTC_interruptpin 20 // A6
 #include <Wire.h>
 #include "RTClib.h"
 
 RTC_DS3231 myRTC;
-
-DateTime alarm1Time = DateTime(now.year(), now.month(), now.day();, 0, 0, 0);
+DateTime now = myRTC.now();
+DateTime alarm1Time = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
 int alarm_year = now.year();
 int alarm_month = now.month();
 int alarm_day = now.day();
@@ -42,9 +42,9 @@ int alarm_minute = 0;
 //// rotary encoder set up ////
 // [D2][GND][D3]
 // [D4][GND]
-#define pinA 2
-#define pinB 3
-#define pinbutton 4
+#define pinA 7
+#define pinB 6
+#define pinbutton 5
 
 volatile boolean halfleft = false;      // Used in both interrupt routines
 volatile boolean halfright = false;
@@ -59,8 +59,8 @@ unsigned long lastDebounceTime = 0;
 #include <Adafruit_ST7789.h>
 #include <SPI.h>
 
-#define TFT_CS     10
-#define TFT_RST    8
+#define TFT_CS     8
+#define TFT_RST    10
 #define TFT_DC     9
 
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
@@ -93,7 +93,7 @@ int Still_Sleep_Threshold = 20; // 20 s base // 3
 String Vib_int[3] = {"Low", "Medium", "High"}; // 4
 int selected_vib_int = 1; //4
 int Alarm_Time = 0; // 5
-
+int time_item = 1;
 static bool drawn = false; // static means var keeps value between func calls
 //// Modulino accelerometer and gyroscope set up ////
 #include "Modulino.h"
@@ -152,15 +152,15 @@ void setup() {
   // myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
   myRTC.disable32K();
   pinMode(RTC_interruptpin, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(RTC_interruptpin), onAlarm, FALLING);
+  attachInterrupt(digitalPinToInterrupt(RTC_interruptpin), onalarm, FALLING);
   // reset alarms
   myRTC.clearAlarm(1);
   myRTC.clearAlarm(2);
   // stop oscillating signals at SQW Pin, otherwise setAlarm1 will fail
-  rtc.writeSqwPinMode(DS3231_OFF);
+  myRTC.writeSqwPinMode(DS3231_OFF);
   // turn off alarm 2 (in case it isn't off already)
   // again, this isn't done at reboot, so a previously set alarm could easily go overlooked
-  rtc.disableAlarm(2);
+  myRTC.disableAlarm(2);
 
   // LCD setup
   
@@ -221,7 +221,7 @@ void loop() {
   
   drawMenu(); // checks to draw settings menu
   determinesleep(); // check for sleeping
-  checkalarm() // checks if alarm set or clears if done
+  checkalarm(); // checks if alarm set or clears if done
 }
 
 // if on page one draw homepage once to prevent  flickering and if page changes reset to allow homepage to be drawn again
@@ -463,11 +463,11 @@ void readrotary(){
     lastDebounceTime = millis();
     if ( page == 2 && menuitem == 5){
       // RTC 
-      if (timeitem == 1){
-        timeitem = 2;
+      if (time_item == 1){
+        time_item = 2;
       }else{
-        timeitem = 1;
-        page++
+        time_item = 1;
+        page++;
       }
     }else if (page <3){
     page++;
@@ -506,12 +506,12 @@ void readrotary(){
         selected_vib_int = 2;
       }
     } else if (menuitem == 5){
-      if (timeitem == 1){
+      if (time_item == 1){
         alarm_hour--;
         if(alarm_hour== -1 ){
-          alarm_hour = 24
+          alarm_hour = 24;
         }
-      }else if(timeitem ==2){
+      }else if(time_item ==2){
         alarm_minute--;
         if(alarm_minute == -1){
           alarm_minute=59;
@@ -549,12 +549,12 @@ void readrotary(){
         selected_vib_int = 0;
       }
     } else if (menuitem == 5){
-      if (timeitem == 1){
+      if (time_item == 1){
         alarm_hour++;
         if(alarm_hour== 25 ){
-          alarm_hour = 0
+          alarm_hour = 0;
         }
-      }else if(timeitem ==2){
+      }else if(time_item ==2){
         alarm_minute++;
         if(alarm_minute == 60){
           alarm_minute=0;
@@ -709,16 +709,17 @@ void onalarm() { // isr for alarm interrupt
     analogWrite(tinkervibpin,255);
   }
 }
+
 // check if scheduled alarm is same
 void checkalarm() {
-  if(!rtc.setAlarm1(alarm1Time, DS3231_A1_Hour)) {  // this mode triggers the alarm when the minutes match
+  if(!myRTC.setAlarm1(alarm1Time, DS3231_A1_Hour)) {  // this mode triggers the alarm when the minutes match
     Serial.println("Error, alarm wasn't set!");
   }else {
     Serial.println("Alarm 1 will happen at specified time");
   }
   // reset if already fired
-  if (rtc.alarmFired(1)) {
-    rtc.clearAlarm(1);
+  if (myRTC.alarmFired(1)) {
+    myRTC.clearAlarm(1);
     Serial.println(" - Alarm cleared");
 }
 }
