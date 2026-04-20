@@ -23,13 +23,21 @@ https://docs.arduino.cc/tutorials/modulino-movement/how-movement/
 // vibration //
 #define DFvibpin 6
 #define tinkervibpin 5
-#define RTC_interrupt 
+
 
 // RTC //
+#define RTC_interruptpin 
 #include <Wire.h>
 #include "RTClib.h"
 
 RTC_DS3231 myRTC;
+
+DateTime alarm1Time = DateTime(now.year(), now.month(), now.day();, 0, 0, 0);
+int alarm_year = now.year();
+int alarm_month = now.month();
+int alarm_day = now.day();
+int alarm_hour = 0;
+int alarm_minute = 0;
 
 //// rotary encoder set up ////
 // [D2][GND][D3]
@@ -132,6 +140,7 @@ float BPM_oldaverage = 0;
 bool sleep_status = false;
 
 void setup() {
+  Serial.begin(9600);
   // RTC
   myRTC.begin();
   Wire.begin(); // I2C
@@ -139,8 +148,22 @@ void setup() {
     Serial.println("RTC lost power, setting time!");
     myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
+  // Uncomment if you need to adjust the time
+  // myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  myRTC.disable32K();
+  pinMode(RTC_interruptpin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(RTC_interruptpin), onAlarm, FALLING);
+  // reset alarms
+  myRTC.clearAlarm(1);
+  myRTC.clearAlarm(2);
+  // stop oscillating signals at SQW Pin, otherwise setAlarm1 will fail
+  rtc.writeSqwPinMode(DS3231_OFF);
+  // turn off alarm 2 (in case it isn't off already)
+  // again, this isn't done at reboot, so a previously set alarm could easily go overlooked
+  rtc.disableAlarm(2);
+
   // LCD setup
-  Serial.begin(9600);
+  
 
   tft.init(240, 240); 
   tft.setRotation(1);
@@ -177,8 +200,6 @@ void loop() {
   drawHomepage(); // draws homepage
   readrotary(); // checks for rotary encoder inputs
   detectMotion(); // checks for movement
-
-
   
   if (millis() - lastBPMUpdate > BPM_INTERVAL) { // gets BPM value
     heartrate.getValue(heartratePin);
@@ -200,6 +221,7 @@ void loop() {
   
   drawMenu(); // checks to draw settings menu
   determinesleep(); // check for sleeping
+  checkalarm() // checks if alarm set or clears if done
 }
 
 // if on page one draw homepage once to prevent  flickering and if page changes reset to allow homepage to be drawn again
@@ -209,6 +231,10 @@ void drawHomepage(){
   }
   if (page ==1){
     if (page == 1 && !drawn){
+      // vib turn off redundancy
+      analogWrite(DFvibpin,0);
+      analogWrite(tinkervibpin,0);
+
       tft.fillScreen(ST77XX_WHITE);  // clear ONCE
       tft.setTextSize(2);
       tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
@@ -314,9 +340,32 @@ void drawMenu(){
   {
    displayStringMenuPage(menuItem4, Vib_int[selected_vib_int] );
   }
-  else if (page==3 && menuitem == 5) 
+  else if (page==3 && menuitem == 5) // same func but added second value bc hour and minute and hard coded selction
   {
-   displayIntMenuPage(menuItem5, Alarm_Time );
+    tft.setTextSize(2);
+    tft.setTextColor(ST77XX_BLACK, ST77XX_WHITE);
+    int x = (240 - menuItem5.length() * 12) / 2; // rough centering ( chars × ~12px each)
+    tft.setCursor(x, 10);
+    tft.print(menuItem5);
+    tft.drawFastHLine(0,40,240,ST77XX_BLACK);
+    tft.setCursor(10, 50);
+    tft.print("Alarm Hour:Minute");
+    tft.setTextSize(2);
+    tft.setCursor(10, 80);
+    if (time_item == 1){
+      tft.setTextColor(ST77XX_WHITE,ST77XX_BLACK); // if selected highlight
+    }else{
+      tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
+    }
+    tft.print(alarm_hour);
+    tft.print(":");
+    if (time_item == 2){
+      tft.setTextColor(ST77XX_WHITE,ST77XX_BLACK); // if selected highlight
+    }else{
+      tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
+    }
+    tft.print(alarm_minute);
+
   }
 }
 
@@ -365,6 +414,20 @@ void displayStringMenuPage(String menuItem, String value){
     tft.setTextSize(2);
 }
 
+void alarmcheck(){ // draws menu bc to much to call in isr 
+
+  if (page == 5){
+  tft.fillScreen(ST77XX_WHITE);  // clear ONCE
+  tft.setTextSize(2);
+  tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
+  tft.setCursor(10, 10);
+  tft.print("Press button to stop alarm");
+  } else{ // turns off vib if not on page 5
+    analogWrite(DFvibpin,0);
+    analogWrite(tinkervibpin,0);
+  }
+}
+
 // rotary interrupt isr functions 
 // half left and rights prevent double counts
 void isr_2(){                                              // Pin2 went LOW
@@ -398,7 +461,15 @@ void readrotary(){
 
   if ( button_reading == LOW && (millis() - lastDebounceTime) > debounceDelay) {
     lastDebounceTime = millis();
-    if (page <3){
+    if ( page == 2 && menuitem == 5){
+      // RTC 
+      if (timeitem == 1){
+        timeitem = 2;
+      }else{
+        timeitem = 1;
+        page++
+      }
+    }else if (page <3){
     page++;
     tft.fillScreen(ST77XX_WHITE);
     } else if(page >= 3 ) {
@@ -435,7 +506,17 @@ void readrotary(){
         selected_vib_int = 2;
       }
     } else if (menuitem == 5){
-      // NEED TO IMPLEMENT REAL TIME 
+      if (timeitem == 1){
+        alarm_hour--;
+        if(alarm_hour== -1 ){
+          alarm_hour = 24
+        }
+      }else if(timeitem ==2){
+        alarm_minute--;
+        if(alarm_minute == -1){
+          alarm_minute=59;
+        }
+      }
     }
     
   }
@@ -468,7 +549,17 @@ void readrotary(){
         selected_vib_int = 0;
       }
     } else if (menuitem == 5){
-      // NEED TO IMPLEMENT REAL TIME 
+      if (timeitem == 1){
+        alarm_hour++;
+        if(alarm_hour== 25 ){
+          alarm_hour = 0
+        }
+      }else if(timeitem ==2){
+        alarm_minute++;
+        if(alarm_minute == 60){
+          alarm_minute=0;
+        }
+      }
     }
     
   }
@@ -575,6 +666,13 @@ void detectMotion() {
 
 // determines if sleeping
 void determinesleep() {
+  if ( page == 5){
+    tft.fillScreen(ST77XX_WHITE);  // clear ONCE
+    tft.setTextSize(2);
+    tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
+    tft.setCursor(10, 10);
+    tft.print("Press button to stop alarm");
+  }
   if (duration_still > Still_Sleep_Threshold && rateValue < BPM_average * (BPM_Threshold / 100.0)){
     sleep_status = true;
     page =5;
@@ -599,9 +697,10 @@ void determinesleep() {
   }
 }
 
-void onalarm() { // isr for alarm interrupt
+// interrupt func
+void onalarm() { // isr for alarm interrupt 
   page =5;
-  if( selected_vib_int = 0){ // if low
+  if( selected_vib_int == 0){ // if low
     analogWrite(tinkervibpin,255);
   } else if (selected_vib_int == 1){ // if medium
     analogWrite(DFvibpin,255);
@@ -609,9 +708,17 @@ void onalarm() { // isr for alarm interrupt
     analogWrite(DFvibpin,255);
     analogWrite(tinkervibpin,255);
   }
-  tft.fillScreen(ST77XX_WHITE);  // clear ONCE
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
-  tft.setCursor(10, 10);
-  tft.print("Press button to stop alarm");
+}
+// check if scheduled alarm is same
+void checkalarm() {
+  if(!rtc.setAlarm1(alarm1Time, DS3231_A1_Hour)) {  // this mode triggers the alarm when the minutes match
+    Serial.println("Error, alarm wasn't set!");
+  }else {
+    Serial.println("Alarm 1 will happen at specified time");
+  }
+  // reset if already fired
+  if (rtc.alarmFired(1)) {
+    rtc.clearAlarm(1);
+    Serial.println(" - Alarm cleared");
+}
 }
