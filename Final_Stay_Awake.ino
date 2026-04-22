@@ -26,34 +26,32 @@ https://docs.arduino.cc/tutorials/modulino-movement/how-movement/
 
 
 // RTC //
-#define RTC_interruptpin 20 // A6
+#define RTC_interruptpin 25 // A6
 #include <Wire.h>
 #include "RTClib.h"
 
 RTC_DS3231 myRTC;
-DateTime now = myRTC.now();
-DateTime alarm1Time = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
-int alarm_year = now.year();
-int alarm_month = now.month();
-int alarm_day = now.day();
+
 int alarm_hour = 0;
 int alarm_minute = 0;
 
 //// rotary encoder set up ////
-// [D2][GND][D3]
+// [D1[GND][D0]
 // [D4][GND]
-#define pinA 7
-#define pinB 6
+#define pinA 16
+#define pinB 17
 #define pinbutton 5
 
 volatile boolean halfleft = false;      // Used in both interrupt routines
 volatile boolean halfright = false;
 
-boolean up = false;
-boolean down = false;
-boolean middle = false;
+volatile boolean up = false;
+volatile boolean down = false;
+volatile boolean middle = false;
 
 unsigned long lastDebounceTime = 0;
+
+bool lastButtonState = LOW;
 //// LCD setup ////
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7789.h>
@@ -133,21 +131,46 @@ uint8_t newRate =0;
 unsigned long lastBPMUpdate = 0;
 const int BPM_INTERVAL = 20; // ms
 
-int n = 0; // # of times bpm has been called and used for averageing
 float BPM_average =0;
-float BPM_oldaverage = 0;
 // sleep logic
 bool sleep_status = false;
 
+
+/////
+volatile bool alarmTriggered = false;
+
+unsigned long sleepStart = 0;
+bool sleepCandidate = false;
+bool alarmScreenDrawn = false;
+
 void setup() {
   Serial.begin(9600);
+  //vib
+  pinMode(DFvibpin, OUTPUT);
+  pinMode(tinkervibpin, OUTPUT);
+
+  digitalWrite(DFvibpin, LOW);
+  digitalWrite(tinkervibpin, LOW);
   // RTC
-  myRTC.begin();
-  Wire.begin(); // I2C
+  Wire.begin();
+  if (!myRTC.begin()) {
+    Serial.println("RTC NOT FOUND");
+  } else {
+    Serial.println("RTC FOUND");
+  }
+   // I2C
+  //myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
   if (myRTC.lostPower()) {
     Serial.println("RTC lost power, setting time!");
     myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
   }
+
+  DateTime now = myRTC.now();
+  DateTime alarm1Time = DateTime(now.year(), now.month(), now.day(), 0, 0, 0);
+
+  int alarm_year = now.year();
+  int alarm_month = now.month();
+  int alarm_day = now.day();
   // Uncomment if you need to adjust the time
   // myRTC.adjust(DateTime(F(__DATE__), F(__TIME__)));
   myRTC.disable32K();
@@ -163,8 +186,6 @@ void setup() {
   myRTC.disableAlarm(2);
 
   // LCD setup
-  
-
   tft.init(240, 240); 
   tft.setRotation(1);
   tft.fillScreen(ST77XX_WHITE);
@@ -174,8 +195,8 @@ void setup() {
   pinMode(pinB, INPUT_PULLUP);
   pinMode(pinbutton, INPUT_PULLUP);
   
-  attachInterrupt(pinA, isr_2, FALLING);   // Call isr_2 when digital pin 2 goes LOW
-  attachInterrupt(pinB, isr_3, FALLING);   // Call isr_3 when digital pin 3 goes LOW
+  attachInterrupt(digitalPinToInterrupt(pinA), isr_A, FALLING);   
+  attachInterrupt(digitalPinToInterrupt(pinB),isr_B, FALLING);   
   // its bad to read button in interrupt so its read in loop
 
   // Modulino setup lets user know to hold still then call callibration func
@@ -205,8 +226,7 @@ void loop() {
     heartrate.getValue(heartratePin);
     rateValue = heartrate.getRate(); // Get heart rate value 
     lastBPMUpdate = millis();
-    n++; 
-    BPM_average = BPM_oldaverage + 1/n*(rateValue-BPM_oldaverage); // itertive average of all BPM values
+    updateBPM(rateValue);
     if(rateValue) {
     Serial.println(rateValue);
     }
@@ -222,8 +242,28 @@ void loop() {
   drawMenu(); // checks to draw settings menu
   determinesleep(); // check for sleeping
   checkalarm(); // checks if alarm set or clears if done
+  if (alarmTriggered) {
+  alarmTriggered = false;
+  page = 5;
+  }
 }
+#define BPM_WINDOW 50
+int bpmArray[BPM_WINDOW];
+int bpmIndex = 0;
+int bpmCount = 0;
 
+void updateBPM(int newVal){
+  bpmArray[bpmIndex] = newVal;
+  bpmIndex = (bpmIndex + 1) % BPM_WINDOW;
+
+  if (bpmCount < BPM_WINDOW) bpmCount++;
+
+  float sum = 0;
+  for(int i = 0; i < bpmCount; i++){
+    sum += bpmArray[i];
+  }
+  BPM_average = sum / bpmCount;
+}
 // if on page one draw homepage once to prevent  flickering and if page changes reset to allow homepage to be drawn again
 void drawHomepage(){
   if (page != 1){
@@ -414,39 +454,33 @@ void displayStringMenuPage(String menuItem, String value){
     tft.setTextSize(2);
 }
 
-void alarmcheck(){ // draws menu bc to much to call in isr 
-
-  if (page == 5){
-  tft.fillScreen(ST77XX_WHITE);  // clear ONCE
-  tft.setTextSize(2);
-  tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
-  tft.setCursor(10, 10);
-  tft.print("Press button to stop alarm");
-  } else{ // turns off vib if not on page 5
-    analogWrite(DFvibpin,0);
-    analogWrite(tinkervibpin,0);
+void checkalarm() {
+  if (myRTC.alarmFired(1)) {
+    myRTC.clearAlarm(1);
+    alarmTriggered = true;
+    Serial.println("Alarm fired!");
   }
 }
 
 // rotary interrupt isr functions 
 // half left and rights prevent double counts
-void isr_2(){                                              // Pin2 went LOW
-  if(digitalRead(2) == LOW){                               // Pin2 still LOW ?
-    if(digitalRead(3) == HIGH && halfright == false){      // if Pin3 is HIGH
+void isr_A(){                                              // Pin2 went LOW
+  if(digitalRead(pinA) == LOW){                               // Pin2 still LOW ?
+    if(digitalRead(pinB) == HIGH && halfright == false){      // if Pin3 is HIGH
       halfright = true;                                    // One half click clockwise
     }  
-    if(digitalRead(3) == LOW && halfleft == true){         // if Pin3 is LOW
+    if(digitalRead(pinB) == LOW && halfleft == true){         // if Pin3 is LOW
       halfleft = false;                                    // One whole click counter-
       down = true;                                           // clockwise
     }
   }
 }
-void isr_3(){                                             // Pin3 went LOW
-  if(digitalRead(3) == LOW){                              // Pin3 still LOW ?
-    if(digitalRead(2) == HIGH && halfleft == false){      // <--
+void isr_B(){                                             // Pin3 went LOW
+  if(digitalRead(pinB) == LOW){                              // Pin3 still LOW ?
+    if(digitalRead(pinA) == HIGH && halfleft == false){      // <--
       halfleft = true;                                    // One half  click counter-
     }                                                     // clockwise
-    if(digitalRead(2) == LOW && halfright == true){       // -->
+    if(digitalRead(pinA) == LOW && halfright == true){       // -->
       halfright = false;                                  // One whole click clockwise
       up = true;
     }
@@ -457,26 +491,25 @@ void isr_3(){                                             // Pin3 went LOW
 void readrotary(){
   unsigned long debounceDelay = 100;
 
-  bool button_reading = digitalRead(pinbutton);
+  bool button_state = digitalRead(pinbutton);
 
-  if ( button_reading == LOW && (millis() - lastDebounceTime) > debounceDelay) {
+  // detect PRESS 
+  if (button_state == LOW && lastButtonState == HIGH &&
+      (millis() - lastDebounceTime) > 150) {
+
     lastDebounceTime = millis();
-    if ( page == 2 && menuitem == 5){
-      // RTC 
-      if (time_item == 1){
-        time_item = 2;
-      }else{
-        time_item = 1;
-        page++;
-      }
-    }else if (page <3){
-    page++;
-    tft.fillScreen(ST77XX_WHITE);
-    } else if(page >= 3 ) {
+
+    if (page < 3) {
+      page++;
+      tft.fillScreen(ST77XX_WHITE);
+    } 
+    else {
       page = 1;
       tft.fillScreen(ST77XX_WHITE);
     }
   }
+
+  lastButtonState = button_state;
 
   if (up && page == 2 && menuitem>1 ){ // move up on menu item in settings menu
     up = false;
@@ -508,8 +541,8 @@ void readrotary(){
     } else if (menuitem == 5){
       if (time_item == 1){
         alarm_hour--;
-        if(alarm_hour== -1 ){
-          alarm_hour = 24;
+        if(alarm_hour < 0  ){
+          alarm_hour = 23;
         }
       }else if(time_item ==2){
         alarm_minute--;
@@ -551,7 +584,7 @@ void readrotary(){
     } else if (menuitem == 5){
       if (time_item == 1){
         alarm_hour++;
-        if(alarm_hour== 25 ){
+        if(alarm_hour >= 24 ){
           alarm_hour = 0;
         }
       }else if(time_item ==2){
@@ -666,60 +699,90 @@ void detectMotion() {
 
 // determines if sleeping
 void determinesleep() {
-  if ( page == 5){
-    tft.fillScreen(ST77XX_WHITE);  // clear ONCE
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
-    tft.setCursor(10, 10);
-    tft.print("Press button to stop alarm");
-  }
-  if (duration_still > Still_Sleep_Threshold && rateValue < BPM_average * (BPM_Threshold / 100.0)){
-    sleep_status = true;
-    page =5;
-    if( selected_vib_int = 0){ // if low
-      analogWrite(tinkervibpin,255);
-    } else if (selected_vib_int == 1){ // if medium
-      analogWrite(DFvibpin,255);
-    } else if (selected_vib_int == 2){ // if high
-      analogWrite(DFvibpin,255);
-      analogWrite(tinkervibpin,255);
+
+  bool condition = (duration_still > Still_Sleep_Threshold &&
+                    rateValue > 40 &&   // ignore garbage readings
+                    rateValue < BPM_average * (BPM_Threshold / 100.0));
+
+  if (condition) {
+    if (!sleepCandidate) {
+      sleepCandidate = true;
+      sleepStart = millis();
     }
-    tft.fillScreen(ST77XX_WHITE);  // clear ONCE
-    tft.setTextSize(2);
-    tft.setTextColor(ST77XX_BLACK,ST77XX_WHITE);
-    tft.setCursor(10, 10);
-    tft.print("Press button to stop alarm");
+
+    // must be true for 3 seconds
+    if (millis() - sleepStart > 3000) {
+      page = 5;
+    }
   } else {
-    sleep_status = false;
-    // turn off vib redundancy
-    analogWrite(DFvibpin,0);
-    analogWrite(tinkervibpin,0);
+    sleepCandidate = false;
+  }
+
+  // ---- HANDLE PAGE 5 (ALARM SCREEN) ----
+  if (page == 5) {
+
+    if (!alarmScreenDrawn) {
+      tft.fillScreen(ST77XX_WHITE);
+      tft.setTextSize(2);
+      tft.setTextColor(ST77XX_BLACK, ST77XX_WHITE);
+      tft.setCursor(10, 10);
+      tft.print("Press button to stop alarm");
+      alarmScreenDrawn = true;
+    }
+
+    triggerVibration();
+
+  } else {
+    alarmScreenDrawn = false;
+    stopVibration();
   }
 }
 
+void setRTCAlarm() {
+  DateTime now = myRTC.now();
+
+  DateTime alarmTime = DateTime(
+    now.year(),
+    now.month(),
+    now.day(),
+    alarm_hour,
+    alarm_minute,
+    0
+  );
+
+  if (alarmTime <= now) {
+    alarmTime = alarmTime + TimeSpan(1, 0, 0, 0);
+  }
+
+  myRTC.disableAlarm(2);
+  myRTC.clearAlarm(1);
+
+  if (!myRTC.setAlarm1(alarmTime, DS3231_A1_Hour)) {
+    Serial.println("Alarm set FAILED");
+  } else {
+    Serial.println("Alarm set!");
+  }
+}
 // interrupt func
-void onalarm() { // isr for alarm interrupt 
-  page =5;
-  if( selected_vib_int == 0){ // if low
-    analogWrite(tinkervibpin,255);
-  } else if (selected_vib_int == 1){ // if medium
-    analogWrite(DFvibpin,255);
-  } else if (selected_vib_int == 2){ // if high
-    analogWrite(DFvibpin,255);
-    analogWrite(tinkervibpin,255);
+
+void onalarm() {
+  alarmTriggered = true;
+}
+
+void triggerVibration() {
+  if (selected_vib_int == 0) {
+    analogWrite(tinkervibpin, 255);
+  } 
+  else if (selected_vib_int == 1) {
+    analogWrite(DFvibpin, 255);
+  } 
+  else {
+    analogWrite(DFvibpin, 255);
+    analogWrite(tinkervibpin, 255);
   }
 }
 
-// check if scheduled alarm is same
-void checkalarm() {
-  if(!myRTC.setAlarm1(alarm1Time, DS3231_A1_Hour)) {  // this mode triggers the alarm when the minutes match
-    Serial.println("Error, alarm wasn't set!");
-  }else {
-    Serial.println("Alarm 1 will happen at specified time");
-  }
-  // reset if already fired
-  if (myRTC.alarmFired(1)) {
-    myRTC.clearAlarm(1);
-    Serial.println(" - Alarm cleared");
-}
+void stopVibration() {
+  analogWrite(DFvibpin, 0);
+  analogWrite(tinkervibpin, 0);
 }
